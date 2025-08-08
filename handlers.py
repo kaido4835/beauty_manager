@@ -37,18 +37,20 @@ async def cmd_start(message: Message):
     stats = get_stats_summary()
 
     # Формируем приветственное сообщение
-    welcome_text = MESSAGES['welcome'] + f"\n\n📊 Сегодня у вас: {stats['today']} записей"
-
-    # Отправляем основное меню с кнопками
-    keyboard = get_main_menu_keyboard()
-    await message.answer(welcome_text, reply_markup=keyboard)
-
-    # Добавляем инлайн кнопки для быстрых действий
-    inline_keyboard = get_main_menu_inline_keyboard()
-    await message.answer(
-        "🚀 Быстрые действия:",
-        reply_markup=inline_keyboard
+    welcome_text = (
+        "Привет! 👋\n\n"
+        "Я — бот, который поможет тебе больше не забывать про записи клиентов и сэкономить кучу времени.\n\n"
+        "Вот что я умею:\n"
+        "✅ Показывать записи на день\n"
+        "✅ Напоминать о клиентах заранее\n"
+        "✅ Удобно вести график прямо в Telegram\n\n"
+        f"📊 Сегодня у вас: {stats['today']} записей\n\n"
+        "Выберите действие или используйте кнопки ниже ⬇️"
     )
+
+    # Отправляем только основную клавиатуру
+    main_keyboard = get_main_menu_keyboard()
+    await message.answer(welcome_text, reply_markup=main_keyboard)
 
 
 @router.callback_query()
@@ -145,23 +147,25 @@ async def handle_callback(callback: CallbackQuery, state: FSMContext):
 
         # Получаем статистику для главного меню
         stats = get_stats_summary()
-        today = datetime.now().date()
 
-        # Формируем сообщение с информацией
-        welcome_text = MESSAGES['main_menu_welcome'].format(
-            today_count=stats['today']
+        # Формируем сообщение
+        welcome_text = (
+            "🏠 Главное меню\n\n"
+            "Добро пожаловать в систему управления записями!\n\n"
+            f"📊 Быстрая статистика:\n"
+            f"📅 Сегодня: {stats['today']} записей\n\n"
+            "Выберите действие или используйте кнопки ниже ⬇️"
         )
 
-        # Создаем новое сообщение с инлайн кнопками
+        # Удаляем предыдущее сообщение если возможно
         try:
             await callback.message.delete()
         except:
             pass  # Игнорируем ошибку если сообщение уже удалено
 
-        await callback.message.answer(
-            welcome_text,
-            reply_markup=get_main_menu_inline_keyboard()
-        )
+        # Отправляем только основную клавиатуру
+        main_keyboard = get_main_menu_keyboard()
+        await callback.message.answer(welcome_text, reply_markup=main_keyboard)
 
     # Быстрый просмотр расписания на сегодня
     elif callback.data == "schedule_today":
@@ -379,7 +383,7 @@ async def handle_message(message: Message, state: FSMContext):
         await state.set_state(AddAppointmentStates.confirmation)
 
     # === ОБЫЧНЫЕ КОМАНДЫ ===
-    elif message.text == "Посмотреть расписание":
+    elif message.text == "📅 Посмотреть расписание":
         appointments = get_schedule()
         today = datetime.now().date()
 
@@ -388,10 +392,24 @@ async def handle_message(message: Message, state: FSMContext):
 
         await message.answer(schedule_text, reply_markup=keyboard)
 
-    elif message.text == "Добавить запись":
+    elif message.text == "➕ Добавить запись":
         keyboard = get_cancel_add_keyboard()
         await message.answer(MESSAGES['add_feature'], reply_markup=keyboard)
         await state.set_state(AddAppointmentStates.waiting_for_client_name)
+
+    elif message.text == "🔍 Найти запись":
+        await message.answer(MESSAGES['search_prompt'])
+        await state.set_state(EditStates.waiting_for_search)
+
+    elif message.text == "📊 Статистика":
+        stats = get_stats_summary()
+        stats_text = MESSAGES['stats_message'].format(
+            today=stats['today'],
+            tomorrow=stats['tomorrow'],
+            week=stats['week'],
+            total=stats['total']
+        )
+        await message.answer(stats_text)
 
     else:
         if not current_state:  # Если не в состоянии редактирования
