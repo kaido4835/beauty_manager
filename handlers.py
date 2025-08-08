@@ -352,7 +352,6 @@ async def handle_admin_callback(callback: CallbackQuery, state: FSMContext, data
             await callback.message.edit_text(COMMON_MESSAGES['delete_cancelled'])
             await state.clear()
 
-        # Главное меню администратора
         elif data == "admin_main_menu":
             await state.clear()
             stats = await safe_database_operation(get_stats_summary)
@@ -435,6 +434,15 @@ async def handle_client_callback(callback: CallbackQuery, state: FSMContext, dat
                     booking_data['service']
                 )
                 await callback.message.edit_text(success_text)
+
+            # Главное меню клиента
+            elif data == "client_main_menu":
+                await state.clear()
+                await callback.message.edit_text(CLIENT_MESSAGES['welcome'])
+                # Отправляем новое сообщение с ReplyKeyboardMarkup
+                keyboard = get_client_menu_keyboard()
+                await callback.message.answer(CLIENT_MESSAGES['welcome'], reply_markup=keyboard)
+
             else:
                 await callback.message.edit_text("❌ Ошибка создания записи. Попробуйте еще раз.")
 
