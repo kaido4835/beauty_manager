@@ -1,76 +1,122 @@
 import sqlite3
+import os
 from datetime import datetime, timedelta
 from config import DATABASE_PATH, WORKING_HOURS, SERVICES
 
 
 def init_database():
-    """Инициализация базы данных с новыми таблицами и миграцией"""
+    """Инициализация базы данных с правильной структурой"""
+    # Создаем директорию для БД если её нет
+    db_dir = os.path.dirname(DATABASE_PATH)
+    if db_dir and not os.path.exists(db_dir):
+        os.makedirs(db_dir)
+
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
 
-    # Создаем таблицу записей (базовая версия для совместимости)
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS appointments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            client_name TEXT NOT NULL,
-            appointment_date DATE NOT NULL,
-            appointment_time TIME NOT NULL,
-            service TEXT NOT NULL
-        )
-    ''')
+    # Включаем поддержку внешних ключей
+    cursor.execute("PRAGMA foreign_keys = ON")
 
-    # Проверяем и добавляем новые колонки если их нет
-    cursor.execute("PRAGMA table_info(appointments)")
-    columns = [column[1] for column in cursor.fetchall()]
-
-    if 'telegram_user_id' not in columns:
-        cursor.execute('ALTER TABLE appointments ADD COLUMN telegram_user_id INTEGER')
-        print("✅ Добавлена колонка telegram_user_id")
-
-    if 'phone' not in columns:
-        cursor.execute('ALTER TABLE appointments ADD COLUMN phone TEXT')
-        print("✅ Добавлена колонка phone")
-
-    if 'status' not in columns:
-        cursor.execute('ALTER TABLE appointments ADD COLUMN status TEXT DEFAULT "active"')
-        cursor.execute('UPDATE appointments SET status = "active" WHERE status IS NULL')
-        print("✅ Добавлена колонка status")
-
-    if 'created_at' not in columns:
-        cursor.execute('ALTER TABLE appointments ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
-        print("✅ Добавлена колонка created_at")
-
-    if 'updated_at' not in columns:
-        cursor.execute('ALTER TABLE appointments ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP')
-        print("✅ Добавлена колонка updated_at")
-
-    # Создаем таблицу клиентов
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS clients (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            telegram_user_id INTEGER UNIQUE,
-            name TEXT,
-            phone TEXT,
-            first_visit DATE,
-            last_visit DATE,
-            total_visits INTEGER DEFAULT 0,
-            notes TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-
-    # Создаем индексы для быстрого поиска (только если колонки существуют)
     try:
+        # Создаем таблицу клиентов
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS clients (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_user_id INTEGER UNIQUE NOT NULL,
+                name TEXT,
+                phone TEXT,
+                first_visit DATE,
+                last_visit DATE,
+                total_visits INTEGER DEFAULT 0,
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        # Создаем таблицу записей с правильными связями
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS appointments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_name TEXT NOT NULL,
+                telegram_user_id INTEGER,
+                phone TEXT,
+                appointment_date DATE NOT NULL,
+                appointment_time TIME NOT NULL,
+                service TEXT NOT NULL,
+                status TEXT DEFAULT 'active',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (telegram_user_id) REFERENCES clients (telegram_user_id)
+            )
+        ''')
+
+        # Создаем индексы для быстрого поиска
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_appointment_date ON appointments(appointment_date)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_telegram_user_id ON appointments(telegram_user_id)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_appointment_status ON appointments(status)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_client_telegram_id ON clients(telegram_user_id)')
-        print("✅ Индексы созданы")
-    except sqlite3.OperationalError as e:
-        print(f"⚠️ Ошибка создания индексов: {e}")
 
-    conn.commit()
-    conn.close()
-    print("✅ База данных инициализирована")
+        # Создаем триггер для обновления updated_at
+        cursor.execute('''
+            CREATE TRIGGER IF NOT EXISTS update_appointments_timestamp 
+            AFTER UPDATE ON appointments
+            FOR EACH ROW
+            BEGIN
+                UPDATE appointments SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+            END
+        ''')
+
+        cursor.execute('''
+            CREATE TRIGGER IF NOT EXISTS update_clients_timestamp 
+            AFTER UPDATE ON clients
+            FOR EACH ROW
+            BEGIN
+                UPDATE clients SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+            END
+        ''')
+
+        conn.commit()
+        print("✅ База данных успешно инициализирована")
+
+        # Проверяем структуру таблиц
+        cursor.execute("PRAGMA table_info(appointments)")
+        appointments_columns = [column[1] for column in cursor.fetchall()]
+        print(f"📋 Колонки таблицы appointments: {appointments_columns}")
+
+        cursor.execute("PRAGMA table_info(clients)")
+        clients_columns = [column[1] for column in cursor.fetchall()]
+        print(f"👥 Колонки таблицы clients: {clients_columns}")
+
+    except sqlite3.Error as e:
+        print(f"❌ Ошибка инициализации БД: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
+
+
+def check_database_integrity():
+    """Проверка целостности базы данных"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+
+    try:
+        # Проверяем целостность
+        cursor.execute("PRAGMA integrity_check")
+        result = cursor.fetchone()
+
+        if result[0] == "ok":
+            print("✅ Целостность БД в порядке")
+            return True
+        else:
+            print(f"❌ Проблемы с целостностью БД: {result[0]}")
+            return False
+
+    except sqlite3.Error as e:
+        print(f"❌ Ошибка проверки БД: {e}")
+        return False
+    finally:
+        conn.close()
 
 
 # ===== ФУНКЦИИ ДЛЯ АДМИНИСТРАТОРА =====
@@ -81,16 +127,22 @@ def get_schedule_by_date(date_offset=0):
 
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
-    cursor.execute('''
-        SELECT client_name, appointment_time, service 
-        FROM appointments 
-        WHERE appointment_date = ? AND status = 'active'
-        ORDER BY appointment_time
-    ''', (target_date,))
-    appointments = cursor.fetchall()
-    conn.close()
 
-    return appointments, target_date
+    try:
+        cursor.execute('''
+            SELECT client_name, appointment_time, service 
+            FROM appointments 
+            WHERE appointment_date = ? AND status = 'active'
+            ORDER BY appointment_time
+        ''', (target_date,))
+        appointments = cursor.fetchall()
+        return appointments, target_date
+
+    except sqlite3.Error as e:
+        print(f"❌ Ошибка получения расписания: {e}")
+        return [], target_date
+    finally:
+        conn.close()
 
 
 def get_schedule_by_specific_date(date_str):
@@ -100,6 +152,7 @@ def get_schedule_by_specific_date(date_str):
 
         conn = sqlite3.connect(DATABASE_PATH)
         cursor = conn.cursor()
+
         cursor.execute('''
             SELECT id, client_name, appointment_time, service 
             FROM appointments 
@@ -107,26 +160,38 @@ def get_schedule_by_specific_date(date_str):
             ORDER BY appointment_time
         ''', (target_date,))
         appointments = cursor.fetchall()
-        conn.close()
 
         return appointments, target_date
-    except ValueError:
+
+    except (ValueError, sqlite3.Error) as e:
+        print(f"❌ Ошибка получения расписания по дате: {e}")
         return None, None
+    finally:
+        if 'conn' in locals():
+            conn.close()
 
 
 def get_all_appointments():
     """Получает все активные записи (для админа)"""
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
-    cursor.execute('''
-        SELECT id, client_name, appointment_date, appointment_time, service, telegram_user_id
-        FROM appointments 
-        WHERE status = 'active'
-        ORDER BY appointment_date, appointment_time
-    ''')
-    appointments = cursor.fetchall()
-    conn.close()
-    return appointments
+
+    try:
+        cursor.execute('''
+            SELECT id, client_name, appointment_date, appointment_time, service, 
+                   COALESCE(telegram_user_id, 0) as telegram_user_id
+            FROM appointments 
+            WHERE status = 'active'
+            ORDER BY appointment_date, appointment_time
+        ''')
+        appointments = cursor.fetchall()
+        return appointments
+
+    except sqlite3.Error as e:
+        print(f"❌ Ошибка получения всех записей: {e}")
+        return []
+    finally:
+        conn.close()
 
 
 def get_stats_summary():
@@ -139,36 +204,48 @@ def get_stats_summary():
     week_start = today
     week_end = today + timedelta(days=7)
 
-    # Записи на сегодня
-    cursor.execute('SELECT COUNT(*) FROM appointments WHERE appointment_date = ? AND status = "active"', (today,))
-    today_count = cursor.fetchone()[0]
+    try:
+        # Записи на сегодня
+        cursor.execute('SELECT COUNT(*) FROM appointments WHERE appointment_date = ? AND status = "active"', (today,))
+        today_count = cursor.fetchone()[0]
 
-    # Записи на завтра
-    cursor.execute('SELECT COUNT(*) FROM appointments WHERE appointment_date = ? AND status = "active"', (tomorrow,))
-    tomorrow_count = cursor.fetchone()[0]
+        # Записи на завтра
+        cursor.execute('SELECT COUNT(*) FROM appointments WHERE appointment_date = ? AND status = "active"',
+                       (tomorrow,))
+        tomorrow_count = cursor.fetchone()[0]
 
-    # Записи на неделю
-    cursor.execute('SELECT COUNT(*) FROM appointments WHERE appointment_date BETWEEN ? AND ? AND status = "active"',
-                   (week_start, week_end))
-    week_count = cursor.fetchone()[0]
+        # Записи на неделю
+        cursor.execute('SELECT COUNT(*) FROM appointments WHERE appointment_date BETWEEN ? AND ? AND status = "active"',
+                       (week_start, week_end))
+        week_count = cursor.fetchone()[0]
 
-    # Общее количество записей
-    cursor.execute('SELECT COUNT(*) FROM appointments WHERE status = "active"')
-    total_count = cursor.fetchone()[0]
+        # Общее количество записей
+        cursor.execute('SELECT COUNT(*) FROM appointments WHERE status = "active"')
+        total_count = cursor.fetchone()[0]
 
-    # Количество клиентов
-    cursor.execute('SELECT COUNT(*) FROM clients')
-    clients_count = cursor.fetchone()[0]
+        # Количество клиентов
+        cursor.execute('SELECT COUNT(*) FROM clients')
+        clients_count = cursor.fetchone()[0]
 
-    conn.close()
+        return {
+            'today': today_count,
+            'tomorrow': tomorrow_count,
+            'week': week_count,
+            'total': total_count,
+            'clients': clients_count
+        }
 
-    return {
-        'today': today_count,
-        'tomorrow': tomorrow_count,
-        'week': week_count,
-        'total': total_count,
-        'clients': clients_count
-    }
+    except sqlite3.Error as e:
+        print(f"❌ Ошибка получения статистики: {e}")
+        return {
+            'today': 0,
+            'tomorrow': 0,
+            'week': 0,
+            'total': 0,
+            'clients': 0
+        }
+    finally:
+        conn.close()
 
 
 # ===== ФУНКЦИИ ДЛЯ КЛИЕНТОВ =====
@@ -178,43 +255,44 @@ def get_client_appointments(telegram_user_id, include_past=False):
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
 
-    # Проверяем, есть ли колонка telegram_user_id
-    cursor.execute("PRAGMA table_info(appointments)")
-    columns = [column[1] for column in cursor.fetchall()]
+    try:
+        if include_past:
+            cursor.execute('''
+                SELECT id, client_name, appointment_date, appointment_time, service, 
+                       COALESCE(status, 'active') as status
+                FROM appointments 
+                WHERE telegram_user_id = ?
+                ORDER BY appointment_date DESC, appointment_time DESC
+            ''', (telegram_user_id,))
+        else:
+            today = datetime.now().date()
+            cursor.execute('''
+                SELECT id, client_name, appointment_date, appointment_time, service,
+                       COALESCE(status, 'active') as status
+                FROM appointments 
+                WHERE telegram_user_id = ? AND appointment_date >= ? 
+                AND COALESCE(status, 'active') = 'active'
+                ORDER BY appointment_date, appointment_time
+            ''', (telegram_user_id, today))
 
-    if 'telegram_user_id' not in columns:
-        # Если колонки нет, возвращаем пустой список
-        conn.close()
+        appointments = cursor.fetchall()
+        return appointments
+
+    except sqlite3.Error as e:
+        print(f"❌ Ошибка получения записей клиента: {e}")
         return []
-
-    if include_past:
-        cursor.execute('''
-            SELECT id, client_name, appointment_date, appointment_time, service, 
-                   COALESCE(status, 'active') as status
-            FROM appointments 
-            WHERE telegram_user_id = ?
-            ORDER BY appointment_date DESC, appointment_time DESC
-        ''', (telegram_user_id,))
-    else:
-        today = datetime.now().date()
-        cursor.execute('''
-            SELECT id, client_name, appointment_date, appointment_time, service,
-                   COALESCE(status, 'active') as status
-            FROM appointments 
-            WHERE telegram_user_id = ? AND appointment_date >= ? 
-            AND COALESCE(status, 'active') = 'active'
-            ORDER BY appointment_date, appointment_time
-        ''', (telegram_user_id, today))
-
-    appointments = cursor.fetchall()
-    conn.close()
-    return appointments
+    finally:
+        conn.close()
 
 
 def get_available_times(date_str, exclude_appointment_id=None):
     """Получает доступное время на указанную дату"""
     try:
         target_date = datetime.strptime(date_str, '%d.%m.%Y').date()
+
+        # Проверяем, что дата не в прошлом
+        if target_date < datetime.now().date():
+            return []
 
         # Получаем занятое время
         conn = sqlite3.connect(DATABASE_PATH)
@@ -232,7 +310,6 @@ def get_available_times(date_str, exclude_appointment_id=None):
             ''', (target_date,))
 
         busy_times = [row[0] for row in cursor.fetchall()]
-        conn.close()
 
         # Генерируем доступное время
         available_times = []
@@ -258,14 +335,23 @@ def get_available_times(date_str, exclude_appointment_id=None):
 
             # Проверяем, не занято ли время
             if time_str not in busy_times:
-                available_times.append(time_str)
+                # Если это сегодня, проверяем, что время еще не прошло
+                if target_date == datetime.now().date():
+                    if current_time.time() > datetime.now().time():
+                        available_times.append(time_str)
+                else:
+                    available_times.append(time_str)
 
             current_time += timedelta(minutes=30)
 
         return available_times
 
-    except ValueError:
+    except (ValueError, sqlite3.Error) as e:
+        print(f"❌ Ошибка получения доступного времени: {e}")
         return []
+    finally:
+        if 'conn' in locals():
+            conn.close()
 
 
 def register_or_update_client(telegram_user_id, name, phone=None):
@@ -273,25 +359,33 @@ def register_or_update_client(telegram_user_id, name, phone=None):
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
 
-    # Проверяем, есть ли уже такой клиент
-    cursor.execute('SELECT id FROM clients WHERE telegram_user_id = ?', (telegram_user_id,))
-    existing_client = cursor.fetchone()
+    try:
+        # Проверяем, есть ли уже такой клиент
+        cursor.execute('SELECT id FROM clients WHERE telegram_user_id = ?', (telegram_user_id,))
+        existing_client = cursor.fetchone()
 
-    if existing_client:
-        # Обновляем существующего клиента
-        cursor.execute('''
-            UPDATE clients SET name = ?, phone = ?, last_visit = ?
-            WHERE telegram_user_id = ?
-        ''', (name, phone, datetime.now().date(), telegram_user_id))
-    else:
-        # Создаем нового клиента
-        cursor.execute('''
-            INSERT INTO clients (telegram_user_id, name, phone, first_visit, last_visit)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (telegram_user_id, name, phone, datetime.now().date(), datetime.now().date()))
+        if existing_client:
+            # Обновляем существующего клиента
+            cursor.execute('''
+                UPDATE clients SET name = ?, phone = ?, last_visit = ?
+                WHERE telegram_user_id = ?
+            ''', (name, phone, datetime.now().date(), telegram_user_id))
+        else:
+            # Создаем нового клиента
+            cursor.execute('''
+                INSERT INTO clients (telegram_user_id, name, phone, first_visit, last_visit)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (telegram_user_id, name, phone, datetime.now().date(), datetime.now().date()))
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+        return True
+
+    except sqlite3.Error as e:
+        print(f"❌ Ошибка регистрации клиента: {e}")
+        conn.rollback()
+        return False
+    finally:
+        conn.close()
 
 
 def book_appointment(telegram_user_id, client_name, appointment_date, appointment_time, service, phone=None):
@@ -299,27 +393,39 @@ def book_appointment(telegram_user_id, client_name, appointment_date, appointmen
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
 
-    # Добавляем запись
-    cursor.execute('''
-        INSERT INTO appointments (client_name, telegram_user_id, phone, appointment_date, appointment_time, service)
-        VALUES (?, ?, ?, ?, ?, ?)
-    ''', (client_name, telegram_user_id, phone, appointment_date, appointment_time, service))
+    try:
+        # Проверяем конфликт времени
+        conflict = check_time_conflict(appointment_time, appointment_date)
+        if conflict:
+            print(f"⚠️ Конфликт времени: {appointment_time} уже занято")
+            return None
 
-    appointment_id = cursor.lastrowid
+        # Добавляем запись
+        cursor.execute('''
+            INSERT INTO appointments (client_name, telegram_user_id, phone, appointment_date, appointment_time, service, status)
+            VALUES (?, ?, ?, ?, ?, ?, 'active')
+        ''', (client_name, telegram_user_id, phone, appointment_date, appointment_time, service))
 
-    # Обновляем информацию о клиенте
-    register_or_update_client(telegram_user_id, client_name, phone)
+        appointment_id = cursor.lastrowid
 
-    # Увеличиваем счетчик визитов
-    cursor.execute('''
-        UPDATE clients SET total_visits = total_visits + 1
-        WHERE telegram_user_id = ?
-    ''', (telegram_user_id,))
+        # Обновляем информацию о клиенте
+        register_or_update_client(telegram_user_id, client_name, phone)
 
-    conn.commit()
-    conn.close()
+        # Увеличиваем счетчик визитов
+        cursor.execute('''
+            UPDATE clients SET total_visits = total_visits + 1
+            WHERE telegram_user_id = ?
+        ''', (telegram_user_id,))
 
-    return appointment_id
+        conn.commit()
+        return appointment_id
+
+    except sqlite3.Error as e:
+        print(f"❌ Ошибка создания записи: {e}")
+        conn.rollback()
+        return None
+    finally:
+        conn.close()
 
 
 def cancel_appointment_by_client(appointment_id, telegram_user_id):
@@ -327,23 +433,28 @@ def cancel_appointment_by_client(appointment_id, telegram_user_id):
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
 
-    # Проверяем, принадлежит ли запись клиенту
-    cursor.execute('''
-        SELECT id FROM appointments 
-        WHERE id = ? AND telegram_user_id = ? AND status = 'active'
-    ''', (appointment_id, telegram_user_id))
-
-    if cursor.fetchone():
+    try:
+        # Проверяем, принадлежит ли запись клиенту
         cursor.execute('''
-            UPDATE appointments SET status = 'cancelled_by_client'
-            WHERE id = ?
-        ''', (appointment_id,))
-        conn.commit()
-        conn.close()
-        return True
+            SELECT id FROM appointments 
+            WHERE id = ? AND telegram_user_id = ? AND status = 'active'
+        ''', (appointment_id, telegram_user_id))
 
-    conn.close()
-    return False
+        if cursor.fetchone():
+            cursor.execute('''
+                UPDATE appointments SET status = 'cancelled_by_client'
+                WHERE id = ?
+            ''', (appointment_id,))
+            conn.commit()
+            return True
+
+        return False
+
+    except sqlite3.Error as e:
+        print(f"❌ Ошибка отмены записи: {e}")
+        return False
+    finally:
+        conn.close()
 
 
 def reschedule_appointment(appointment_id, new_date, new_time, telegram_user_id=None):
@@ -351,25 +462,37 @@ def reschedule_appointment(appointment_id, new_date, new_time, telegram_user_id=
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
 
-    if telegram_user_id:
-        # Клиент может переносить только свои записи
-        cursor.execute('''
-            UPDATE appointments 
-            SET appointment_date = ?, appointment_time = ?, updated_at = ?
-            WHERE id = ? AND telegram_user_id = ? AND status = 'active'
-        ''', (new_date, new_time, datetime.now(), appointment_id, telegram_user_id))
-    else:
-        # Админ может переносить любые записи
-        cursor.execute('''
-            UPDATE appointments 
-            SET appointment_date = ?, appointment_time = ?, updated_at = ?
-            WHERE id = ? AND status = 'active'
-        ''', (new_date, new_time, datetime.now(), appointment_id))
+    try:
+        # Проверяем конфликт времени (исключая текущую запись)
+        conflict = check_time_conflict(new_time, new_date, appointment_id)
+        if conflict:
+            print(f"⚠️ Конфликт времени при переносе: {new_time} уже занято")
+            return False
 
-    success = cursor.rowcount > 0
-    conn.commit()
-    conn.close()
-    return success
+        if telegram_user_id:
+            # Клиент может переносить только свои записи
+            cursor.execute('''
+                UPDATE appointments 
+                SET appointment_date = ?, appointment_time = ?
+                WHERE id = ? AND telegram_user_id = ? AND status = 'active'
+            ''', (new_date, new_time, appointment_id, telegram_user_id))
+        else:
+            # Админ может переносить любые записи
+            cursor.execute('''
+                UPDATE appointments 
+                SET appointment_date = ?, appointment_time = ?
+                WHERE id = ? AND status = 'active'
+            ''', (new_date, new_time, appointment_id))
+
+        success = cursor.rowcount > 0
+        conn.commit()
+        return success
+
+    except sqlite3.Error as e:
+        print(f"❌ Ошибка переноса записи: {e}")
+        return False
+    finally:
+        conn.close()
 
 
 # ===== ОБЩИЕ ФУНКЦИИ =====
@@ -378,19 +501,34 @@ def add_appointment(client_name, appointment_date, appointment_time, service, te
     """Добавление новой записи (универсальная функция)"""
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO appointments (client_name, telegram_user_id, phone, appointment_date, appointment_time, service)
-        VALUES (?, ?, ?, ?, ?, ?)
-    ''', (client_name, telegram_user_id, phone, appointment_date, appointment_time, service))
-    appointment_id = cursor.lastrowid
 
-    # Если есть telegram_user_id, обновляем информацию о клиенте
-    if telegram_user_id:
-        register_or_update_client(telegram_user_id, client_name, phone)
+    try:
+        # Проверяем конфликт времени
+        conflict = check_time_conflict(appointment_time, appointment_date)
+        if conflict:
+            print(f"⚠️ Конфликт времени: {appointment_time} уже занято клиентом {conflict[0]}")
+            return None
 
-    conn.commit()
-    conn.close()
-    return appointment_id
+        cursor.execute('''
+            INSERT INTO appointments (client_name, telegram_user_id, phone, appointment_date, appointment_time, service, status)
+            VALUES (?, ?, ?, ?, ?, ?, 'active')
+        ''', (client_name, telegram_user_id, phone, appointment_date, appointment_time, service))
+
+        appointment_id = cursor.lastrowid
+
+        # Если есть telegram_user_id, обновляем информацию о клиенте
+        if telegram_user_id:
+            register_or_update_client(telegram_user_id, client_name, phone)
+
+        conn.commit()
+        return appointment_id
+
+    except sqlite3.Error as e:
+        print(f"❌ Ошибка добавления записи: {e}")
+        conn.rollback()
+        return None
+    finally:
+        conn.close()
 
 
 def search_appointment(search_term):
@@ -398,71 +536,118 @@ def search_appointment(search_term):
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
 
-    if search_term.isdigit():
-        # Поиск по ID
-        cursor.execute('''
-            SELECT id, client_name, appointment_date, appointment_time, service 
-            FROM appointments WHERE id = ? AND status = 'active'
-        ''', (search_term,))
-    else:
-        # Поиск по имени или времени
-        cursor.execute('''
-            SELECT id, client_name, appointment_date, appointment_time, service 
-            FROM appointments 
-            WHERE (client_name LIKE ? OR appointment_time LIKE ?) AND status = 'active'
-        ''', (f'%{search_term}%', f'%{search_term}%'))
+    try:
+        if search_term.isdigit():
+            # Поиск по ID
+            cursor.execute('''
+                SELECT id, client_name, appointment_date, appointment_time, service 
+                FROM appointments WHERE id = ? AND status = 'active'
+            ''', (search_term,))
+        else:
+            # Поиск по имени или времени
+            cursor.execute('''
+                SELECT id, client_name, appointment_date, appointment_time, service 
+                FROM appointments 
+                WHERE (client_name LIKE ? OR appointment_time LIKE ?) AND status = 'active'
+                ORDER BY appointment_date, appointment_time
+            ''', (f'%{search_term}%', f'%{search_term}%'))
 
-    appointments = cursor.fetchall()
-    conn.close()
-    return appointments
+        appointments = cursor.fetchall()
+        return appointments
+
+    except sqlite3.Error as e:
+        print(f"❌ Ошибка поиска записи: {e}")
+        return []
+    finally:
+        conn.close()
 
 
 def delete_appointment(appointment_id):
     """Удаление записи по ID (помечает как удаленную)"""
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
-    cursor.execute('''
-        UPDATE appointments SET status = 'deleted' 
-        WHERE id = ?
-    ''', (appointment_id,))
-    conn.commit()
-    conn.close()
+
+    try:
+        cursor.execute('''
+            UPDATE appointments SET status = 'deleted' 
+            WHERE id = ? AND status = 'active'
+        ''', (appointment_id,))
+
+        success = cursor.rowcount > 0
+        conn.commit()
+        return success
+
+    except sqlite3.Error as e:
+        print(f"❌ Ошибка удаления записи: {e}")
+        return False
+    finally:
+        conn.close()
 
 
 def update_appointment_time(appointment_id, new_time):
     """Обновление времени записи"""
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
-    cursor.execute('''
-        UPDATE appointments SET appointment_time = ?, updated_at = ? 
-        WHERE id = ? AND status = 'active'
-    ''', (new_time, datetime.now(), appointment_id))
-    conn.commit()
-    conn.close()
+
+    try:
+        cursor.execute('''
+            UPDATE appointments SET appointment_time = ? 
+            WHERE id = ? AND status = 'active'
+        ''', (new_time, appointment_id))
+
+        success = cursor.rowcount > 0
+        conn.commit()
+        return success
+
+    except sqlite3.Error as e:
+        print(f"❌ Ошибка обновления времени: {e}")
+        return False
+    finally:
+        conn.close()
 
 
 def update_appointment_client(appointment_id, new_client_name):
     """Обновление имени клиента"""
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
-    cursor.execute('''
-        UPDATE appointments SET client_name = ?, updated_at = ? 
-        WHERE id = ? AND status = 'active'
-    ''', (new_client_name, datetime.now(), appointment_id))
-    conn.commit()
-    conn.close()
+
+    try:
+        cursor.execute('''
+            UPDATE appointments SET client_name = ? 
+            WHERE id = ? AND status = 'active'
+        ''', (new_client_name, appointment_id))
+
+        success = cursor.rowcount > 0
+        conn.commit()
+        return success
+
+    except sqlite3.Error as e:
+        print(f"❌ Ошибка обновления клиента: {e}")
+        return False
+    finally:
+        conn.close()
 
 
 def update_appointment_service(appointment_id, new_service):
     """Обновление услуги"""
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
-    cursor.execute('''
-        UPDATE appointments SET service = ?, updated_at = ? 
-        WHERE id = ? AND status = 'active'
-    ''', (new_service, datetime.now(), appointment_id))
-    conn.commit()
-    conn.close()
+
+    try:
+        cursor.execute('''
+            UPDATE appointments SET service = ? 
+            WHERE id = ? AND status = 'active'
+        ''', (new_service, appointment_id))
+
+        success = cursor.rowcount > 0
+        conn.commit()
+        return success
+
+    except sqlite3.Error as e:
+        print(f"❌ Ошибка обновления услуги: {e}")
+        return False
+    finally:
+        conn.close()
 
 
 def check_time_conflict(new_time, appointment_date, exclude_id=None):
@@ -470,20 +655,26 @@ def check_time_conflict(new_time, appointment_date, exclude_id=None):
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
 
-    if exclude_id:
-        cursor.execute('''
-            SELECT client_name FROM appointments 
-            WHERE appointment_time = ? AND appointment_date = ? AND id != ? AND status = 'active'
-        ''', (new_time, appointment_date, exclude_id))
-    else:
-        cursor.execute('''
-            SELECT client_name FROM appointments 
-            WHERE appointment_time = ? AND appointment_date = ? AND status = 'active'
-        ''', (new_time, appointment_date))
+    try:
+        if exclude_id:
+            cursor.execute('''
+                SELECT client_name FROM appointments 
+                WHERE appointment_time = ? AND appointment_date = ? AND id != ? AND status = 'active'
+            ''', (new_time, appointment_date, exclude_id))
+        else:
+            cursor.execute('''
+                SELECT client_name FROM appointments 
+                WHERE appointment_time = ? AND appointment_date = ? AND status = 'active'
+            ''', (new_time, appointment_date))
 
-    conflict = cursor.fetchone()
-    conn.close()
-    return conflict
+        conflict = cursor.fetchone()
+        return conflict
+
+    except sqlite3.Error as e:
+        print(f"❌ Ошибка проверки конфликта: {e}")
+        return None
+    finally:
+        conn.close()
 
 
 def get_appointment_by_id(appointment_id):
@@ -491,57 +682,133 @@ def get_appointment_by_id(appointment_id):
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
 
-    # Проверяем, есть ли новые колонки
-    cursor.execute("PRAGMA table_info(appointments)")
-    columns = [column[1] for column in cursor.fetchall()]
-
-    if 'telegram_user_id' in columns and 'status' in columns:
+    try:
         cursor.execute('''
             SELECT client_name, appointment_date, appointment_time, service, 
                    COALESCE(telegram_user_id, 0) as telegram_user_id
             FROM appointments 
-            WHERE id = ? AND COALESCE(status, 'active') = 'active'
-        ''', (appointment_id,))
-    else:
-        cursor.execute('''
-            SELECT client_name, appointment_date, appointment_time, service, 0
-            FROM appointments WHERE id = ?
+            WHERE id = ? AND status = 'active'
         ''', (appointment_id,))
 
-    appointment = cursor.fetchone()
-    conn.close()
-    return appointment
+        appointment = cursor.fetchone()
+        return appointment
+
+    except sqlite3.Error as e:
+        print(f"❌ Ошибка получения записи по ID: {e}")
+        return None
+    finally:
+        conn.close()
 
 
 def get_client_info(telegram_user_id):
     """Получает информацию о клиенте"""
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
-    cursor.execute('''
-        SELECT name, phone, first_visit, total_visits
-        FROM clients WHERE telegram_user_id = ?
-    ''', (telegram_user_id,))
-    client = cursor.fetchone()
-    conn.close()
-    return client
+
+    try:
+        cursor.execute('''
+            SELECT name, phone, first_visit, total_visits, notes
+            FROM clients WHERE telegram_user_id = ?
+        ''', (telegram_user_id,))
+
+        client = cursor.fetchone()
+        return client
+
+    except sqlite3.Error as e:
+        print(f"❌ Ошибка получения информации о клиенте: {e}")
+        return None
+    finally:
+        conn.close()
 
 
 def get_appointments_count_by_date(date_str):
     """Получает количество записей на конкретную дату"""
     try:
         target_date = datetime.strptime(date_str, '%d.%m.%Y').date()
+
         conn = sqlite3.connect(DATABASE_PATH)
         cursor = conn.cursor()
+
         cursor.execute('''
             SELECT COUNT(*) FROM appointments 
             WHERE appointment_date = ? AND status = 'active'
         ''', (target_date,))
+
         count = cursor.fetchone()[0]
-        conn.close()
         return count
-    except ValueError:
+
+    except (ValueError, sqlite3.Error) as e:
+        print(f"❌ Ошибка подсчета записей: {e}")
         return 0
+    finally:
+        if 'conn' in locals():
+            conn.close()
+
+
+def cleanup_old_appointments(days_old=30):
+    """Очистка старых записей (старше указанного количества дней)"""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+
+    try:
+        cutoff_date = datetime.now().date() - timedelta(days=days_old)
+
+        cursor.execute('''
+            UPDATE appointments SET status = 'archived'
+            WHERE appointment_date < ? AND status IN ('cancelled_by_client', 'deleted')
+        ''', (cutoff_date,))
+
+        archived_count = cursor.rowcount
+        conn.commit()
+
+        print(f"📋 Архивировано {archived_count} старых записей")
+        return archived_count
+
+    except sqlite3.Error as e:
+        print(f"❌ Ошибка очистки записей: {e}")
+        return 0
+    finally:
+        conn.close()
+
+
+def get_database_info():
+    """Получает информацию о базе данных"""
+    if not os.path.exists(DATABASE_PATH):
+        return "❌ База данных не найдена"
+
+    size = os.path.getsize(DATABASE_PATH)
+    size_mb = size / (1024 * 1024)
+
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute("SELECT COUNT(*) FROM appointments WHERE status = 'active'")
+        active_appointments = cursor.fetchone()[0]
+
+        cursor.execute("SELECT COUNT(*) FROM appointments")
+        total_appointments = cursor.fetchone()[0]
+
+        cursor.execute("SELECT COUNT(*) FROM clients")
+        total_clients = cursor.fetchone()[0]
+
+        return f"""📊 Информация о базе данных:
+📁 Размер: {size_mb:.2f} MB
+📋 Активных записей: {active_appointments}
+📝 Всего записей: {total_appointments}
+👥 Клиентов: {total_clients}
+💾 Путь: {DATABASE_PATH}"""
+
+    except sqlite3.Error as e:
+        return f"❌ Ошибка получения информации: {e}"
+    finally:
+        conn.close()
 
 
 # Инициализируем базу данных при импорте модуля
-init_database()
+if __name__ == "__main__":
+    init_database()
+    check_database_integrity()
+    print(get_database_info())
+else:
+    init_database()
