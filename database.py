@@ -84,6 +84,8 @@ def init_database():
                     client_name TEXT NOT NULL,
                     telegram_user_id INTEGER,
                     phone TEXT,
+                    username TEXT,
+                    user_profile_link TEXT,
                     appointment_date DATE NOT NULL,
                     appointment_time TIME NOT NULL,
                     service TEXT NOT NULL,
@@ -108,6 +110,14 @@ def init_database():
                 print("➕ Добавляем колонку telegram_user_id")
                 cursor.execute('ALTER TABLE appointments ADD COLUMN telegram_user_id INTEGER')
 
+            if 'username' not in existing_columns:
+                print("➕ Добавляем колонку username")
+                cursor.execute('ALTER TABLE appointments ADD COLUMN username TEXT')
+
+            if 'user_profile_link' not in existing_columns:
+                print("➕ Добавляем колонку user_profile_link")
+                cursor.execute('ALTER TABLE appointments ADD COLUMN user_profile_link TEXT')
+
         # Создаем таблицу клиентов (упрощенная версия)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS clients (
@@ -115,6 +125,8 @@ def init_database():
                 telegram_user_id INTEGER UNIQUE NOT NULL,
                 name TEXT,
                 phone TEXT,
+                username TEXT,
+                user_profile_link TEXT,
                 first_visit DATE,
                 last_visit DATE,
                 total_visits INTEGER DEFAULT 0,
@@ -122,6 +134,18 @@ def init_database():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+
+        # Добавляем недостающие колонки в таблицу clients
+        cursor.execute("PRAGMA table_info(clients)")
+        client_columns = [column[1] for column in cursor.fetchall()]
+
+        if 'username' not in client_columns:
+            print("➕ Добавляем колонку username в таблицу clients")
+            cursor.execute('ALTER TABLE clients ADD COLUMN username TEXT')
+
+        if 'user_profile_link' not in client_columns:
+            print("➕ Добавляем колонку user_profile_link в таблицу clients")
+            cursor.execute('ALTER TABLE clients ADD COLUMN user_profile_link TEXT')
 
         # Создаем индексы
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_appointment_date ON appointments(appointment_date)')
@@ -162,6 +186,21 @@ def check_database_integrity():
         return False
 
 
+def get_user_profile_info(telegram_user):
+    """Формирует информацию о профиле пользователя"""
+    username = getattr(telegram_user, 'username', None)
+    user_id = getattr(telegram_user, 'id', None)
+
+    if username:
+        profile_link = f"https://t.me/{username}"
+        display_username = f"@{username}"
+    else:
+        profile_link = f"tg://user?id={user_id}" if user_id else None
+        display_username = None
+
+    return username, profile_link, display_username
+
+
 # ===== ФУНКЦИИ ДЛЯ АДМИНИСТРАТОРА =====
 
 def get_schedule_by_date(date_offset=0):
@@ -169,7 +208,7 @@ def get_schedule_by_date(date_offset=0):
     target_date = datetime.now().date() + timedelta(days=date_offset)
 
     appointments = safe_execute('''
-        SELECT client_name, appointment_time, service 
+        SELECT client_name, appointment_time, service, username, user_profile_link 
         FROM appointments 
         WHERE appointment_date = ? AND status = 'active'
         ORDER BY appointment_time
@@ -187,7 +226,7 @@ def get_schedule_by_specific_date(date_str):
         target_date = datetime.strptime(date_str, '%d.%m.%Y').date()
 
         appointments = safe_execute('''
-            SELECT id, client_name, appointment_time, service 
+            SELECT id, client_name, appointment_time, service, username, user_profile_link 
             FROM appointments 
             WHERE appointment_date = ? AND status = 'active'
             ORDER BY appointment_time
@@ -337,8 +376,10 @@ def get_available_times(date_str, exclude_appointment_id=None):
         return []
 
 
-def register_or_update_client(telegram_user_id, name, phone=None):
+def register_or_update_client(telegram_user_id, name, phone=None, telegram_user=None):
     """Регистрирует или обновляет информацию о клиенте"""
+    username, profile_link, _ = get_user_profile_info(telegram_user) if telegram_user else (None, None, None)
+
     # Проверяем, есть ли уже такой клиент
     existing_client = safe_execute(
         'SELECT id FROM clients WHERE telegram_user_id = ?',
@@ -348,20 +389,22 @@ def register_or_update_client(telegram_user_id, name, phone=None):
     if existing_client:
         # Обновляем существующего клиента
         result = safe_execute('''
-            UPDATE clients SET name = ?, phone = ?, last_visit = ?
+            UPDATE clients SET name = ?, phone = ?, username = ?, user_profile_link = ?, last_visit = ?
             WHERE telegram_user_id = ?
-        ''', (name, phone, datetime.now().date(), telegram_user_id), 'rowcount')
+        ''', (name, phone, username, profile_link, datetime.now().date(), telegram_user_id), 'rowcount')
         return result is not None
     else:
         # Создаем нового клиента
         result = safe_execute('''
-            INSERT INTO clients (telegram_user_id, name, phone, first_visit, last_visit)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (telegram_user_id, name, phone, datetime.now().date(), datetime.now().date()), 'lastrowid')
+            INSERT INTO clients (telegram_user_id, name, phone, username, user_profile_link, first_visit, last_visit)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (telegram_user_id, name, phone, username, profile_link, datetime.now().date(), datetime.now().date()),
+                              'lastrowid')
         return result is not None
 
 
-def book_appointment(telegram_user_id, client_name, appointment_date, appointment_time, service, phone=None):
+def book_appointment(telegram_user_id, client_name, appointment_date, appointment_time, service, phone=None,
+                     telegram_user=None):
     """Создает новую запись для клиента"""
     # Проверяем конфликт времени
     conflict = check_time_conflict(appointment_time, appointment_date)
@@ -369,15 +412,20 @@ def book_appointment(telegram_user_id, client_name, appointment_date, appointmen
         print(f"⚠️ Конфликт времени: {appointment_time} уже занято")
         return None
 
+    # Получаем информацию о профиле пользователя
+    username, profile_link, _ = get_user_profile_info(telegram_user) if telegram_user else (None, None, None)
+
     # Добавляем запись
     appointment_id = safe_execute('''
-        INSERT INTO appointments (client_name, telegram_user_id, phone, appointment_date, appointment_time, service, status)
-        VALUES (?, ?, ?, ?, ?, ?, 'active')
-    ''', (client_name, telegram_user_id, phone, appointment_date, appointment_time, service), 'lastrowid')
+        INSERT INTO appointments (client_name, telegram_user_id, phone, username, user_profile_link, 
+                                appointment_date, appointment_time, service, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')
+    ''', (client_name, telegram_user_id, phone, username, profile_link, appointment_date, appointment_time, service),
+                                  'lastrowid')
 
     if appointment_id:
         # Обновляем информацию о клиенте
-        register_or_update_client(telegram_user_id, client_name, phone)
+        register_or_update_client(telegram_user_id, client_name, phone, telegram_user)
 
         # Увеличиваем счетчик визитов
         safe_execute('''
@@ -434,7 +482,8 @@ def reschedule_appointment(appointment_id, new_date, new_time, telegram_user_id=
 
 # ===== ОБЩИЕ ФУНКЦИИ =====
 
-def add_appointment(client_name, appointment_date, appointment_time, service, telegram_user_id=None, phone=None):
+def add_appointment(client_name, appointment_date, appointment_time, service, telegram_user_id=None, phone=None,
+                    telegram_user=None):
     """Добавление новой записи (универсальная функция)"""
     # Проверяем конфликт времени
     conflict = check_time_conflict(appointment_time, appointment_date)
@@ -442,14 +491,19 @@ def add_appointment(client_name, appointment_date, appointment_time, service, te
         print(f"⚠️ Конфликт времени: {appointment_time} уже занято клиентом {conflict[0]}")
         return None
 
+    # Получаем информацию о профиле пользователя
+    username, profile_link, _ = get_user_profile_info(telegram_user) if telegram_user else (None, None, None)
+
     appointment_id = safe_execute('''
-        INSERT INTO appointments (client_name, telegram_user_id, phone, appointment_date, appointment_time, service, status)
-        VALUES (?, ?, ?, ?, ?, ?, 'active')
-    ''', (client_name, telegram_user_id, phone, appointment_date, appointment_time, service), 'lastrowid')
+        INSERT INTO appointments (client_name, telegram_user_id, phone, username, user_profile_link,
+                                appointment_date, appointment_time, service, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')
+    ''', (client_name, telegram_user_id, phone, username, profile_link, appointment_date, appointment_time, service),
+                                  'lastrowid')
 
     # Если есть telegram_user_id, обновляем информацию о клиенте
     if appointment_id and telegram_user_id:
-        register_or_update_client(telegram_user_id, client_name, phone)
+        register_or_update_client(telegram_user_id, client_name, phone, telegram_user)
 
     return appointment_id
 
@@ -534,7 +588,7 @@ def get_appointment_by_id(appointment_id):
     """Получение информации о записи по ID"""
     appointment = safe_execute('''
         SELECT client_name, appointment_date, appointment_time, service, 
-               COALESCE(telegram_user_id, 0) as telegram_user_id
+               COALESCE(telegram_user_id, 0) as telegram_user_id, username, user_profile_link
         FROM appointments 
         WHERE id = ? AND status = 'active'
     ''', (appointment_id,), 'one')
@@ -545,7 +599,7 @@ def get_appointment_by_id(appointment_id):
 def get_client_info(telegram_user_id):
     """Получает информацию о клиенте"""
     client = safe_execute('''
-        SELECT name, phone, first_visit, total_visits, notes
+        SELECT name, phone, first_visit, total_visits, notes, username, user_profile_link
         FROM clients WHERE telegram_user_id = ?
     ''', (telegram_user_id,), 'one')
 

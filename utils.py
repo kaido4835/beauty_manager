@@ -10,6 +10,36 @@ def format_date_russian(date_obj):
     return f"{weekday}, {day} {month}"
 
 
+def format_client_name_with_profile(client_name, username=None, profile_link=None):
+    """Форматирует имя клиента с возможностью клика на профиль (HTML)"""
+    if profile_link and username:
+        # Если есть username, делаем имя кликабельным
+        return f'<a href="{profile_link}">{client_name}</a>'
+    elif profile_link:
+        # Если нет username, но есть прямая ссылка
+        return f'<a href="{profile_link}">{client_name}</a>'
+    else:
+        # Обычный текст без ссылки
+        return client_name
+
+
+def format_username_display(username=None, profile_link=None):
+    """Форматирует отображение username (HTML)"""
+    if username and profile_link:
+        return f'<a href="{profile_link}">@{username}</a>'
+    elif username:
+        return f"@{username}"
+    else:
+        return "Не указан"
+
+
+def escape_html(text):
+    """Экранирует HTML символы"""
+    if not text:
+        return ""
+    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def validate_time_format(time_str):
     """Валидация формата времени ЧЧ:ММ"""
     try:
@@ -59,21 +89,39 @@ def validate_phone_number(phone):
 # ===== ФОРМАТИРОВАНИЕ ДЛЯ АДМИНИСТРАТОРА =====
 
 def format_admin_schedule_text(appointments, target_date):
-    """Форматирует расписание для администратора"""
+    """Форматирует расписание для администратора с кликабельными профилями (HTML)"""
     date_text = format_date_russian(target_date)
 
     if appointments:
         schedule_text = f"📅 Расписание на {date_text}:\n\n"
 
-        if len(appointments[0]) == 4:  # С ID
-            for appointment_id, client_name, appointment_time, service in appointments:
-                schedule_text += f"🕐 {appointment_time} - {client_name}\n"
-                schedule_text += f"📋 Услуга: {service}\n"
+        if len(appointments[0]) == 6:  # С ID и профилем
+            for appointment_id, client_name, appointment_time, service, username, profile_link in appointments:
+                clickable_name = format_client_name_with_profile(client_name, username, profile_link)
+                schedule_text += f"🕐 {escape_html(appointment_time)} - {clickable_name}\n"
+                schedule_text += f"📋 Услуга: {escape_html(service)}\n"
+                if username:
+                    username_display = format_username_display(username, profile_link)
+                    schedule_text += f"👤 Профиль: {username_display}\n"
                 schedule_text += f"🆔 ID: {appointment_id}\n\n"
-        else:  # Без ID
+        elif len(appointments[0]) == 5:  # Без ID, но с профилем
+            for client_name, appointment_time, service, username, profile_link in appointments:
+                clickable_name = format_client_name_with_profile(client_name, username, profile_link)
+                schedule_text += f"🕐 {escape_html(appointment_time)} - {clickable_name}\n"
+                schedule_text += f"📋 Услуга: {escape_html(service)}\n"
+                if username:
+                    username_display = format_username_display(username, profile_link)
+                    schedule_text += f"👤 Профиль: {username_display}\n"
+                schedule_text += "\n"
+        elif len(appointments[0]) == 4:  # Старый формат с ID
+            for appointment_id, client_name, appointment_time, service in appointments:
+                schedule_text += f"🕐 {escape_html(appointment_time)} - {escape_html(client_name)}\n"
+                schedule_text += f"📋 Услуга: {escape_html(service)}\n"
+                schedule_text += f"🆔 ID: {appointment_id}\n\n"
+        else:  # Старый формат без ID
             for client_name, appointment_time, service in appointments:
-                schedule_text += f"🕐 {appointment_time} - {client_name}\n"
-                schedule_text += f"📋 Услуга: {service}\n\n"
+                schedule_text += f"🕐 {escape_html(appointment_time)} - {escape_html(client_name)}\n"
+                schedule_text += f"📋 Услуга: {escape_html(service)}\n\n"
     else:
         schedule_text = f"📅 На {date_text} записей нет"
 
@@ -109,8 +157,8 @@ def format_client_appointments(appointments):
         status_emoji = "✅" if status == "active" else "❌"
 
         result += f"{status_emoji} {formatted_date}\n"
-        result += f"🕐 Время: {appointment_time}\n"
-        result += f"📋 Услуга: {service}\n"
+        result += f"🕐 Время: {escape_html(appointment_time)}\n"
+        result += f"📋 Услуга: {escape_html(service)}\n"
         result += f"🆔 ID: {appointment_id}\n\n"
 
     return result
@@ -167,10 +215,10 @@ def format_booking_confirmation(client_name, appointment_date, appointment_time,
 
         return f"""📋 Подтвердите запись:
 
-👤 Имя: {client_name}
+👤 Имя: {escape_html(client_name)}
 📅 Дата: {formatted_date}
-🕐 Время: {appointment_time}
-📋 Услуга: {service}
+🕐 Время: {escape_html(appointment_time)}
+📋 Услуга: {escape_html(service)}
 
 Все данные верны?"""
     except ValueError:
@@ -186,10 +234,10 @@ def format_booking_success(appointment_id, client_name, appointment_date, appoin
         return f"""✅ Запись успешно создана!
 
 🆔 Номер записи: {appointment_id}
-👤 Клиент: {client_name}  
+👤 Клиент: {escape_html(client_name)}
 📅 Дата: {formatted_date}
-🕐 Время: {appointment_time}
-📋 Услуга: {service}
+🕐 Время: {escape_html(appointment_time)}
+📋 Услуга: {escape_html(service)}
 
 📱 Мы пришлем вам напоминание за день до визита.
 💬 Если нужно что-то изменить, используйте кнопку "Мои записи"."""
@@ -197,20 +245,27 @@ def format_booking_success(appointment_id, client_name, appointment_date, appoin
         return "✅ Запись создана, но возникла ошибка форматирования"
 
 
-def format_appointment_details(appointment_id, client_name, appointment_date, appointment_time, service):
-    """Форматирует детальную информацию о записи"""
+def format_appointment_details(appointment_id, client_name, appointment_date, appointment_time, service, username=None, profile_link=None):
+    """Форматирует детальную информацию о записи (HTML)"""
     date_obj = datetime.strptime(appointment_date, '%Y-%m-%d').date()
     formatted_date = format_date_russian(date_obj)
 
-    return f"""📝 Детали записи:
+    clickable_name = format_client_name_with_profile(client_name, username, profile_link)
+
+    details_text = f"""📝 Детали записи:
 
 🆔 ID: {appointment_id}
-👤 Клиент: {client_name}
+👤 Клиент: {clickable_name}
 📅 Дата: {formatted_date}
-🕐 Время: {appointment_time}
-📋 Услуга: {service}
+🕐 Время: {escape_html(appointment_time)}
+📋 Услуга: {escape_html(service)}"""
 
-Выберите действие:"""
+    if username:
+        username_display = format_username_display(username, profile_link)
+        details_text += f"\n👤 Профиль: {username_display}"
+
+    details_text += "\n\nВыберите действие:"
+    return details_text
 
 
 def format_cancel_confirmation_client(appointment_id, client_name, appointment_date, appointment_time, service):
@@ -228,10 +283,10 @@ def format_cancel_confirmation_client(appointment_id, client_name, appointment_d
 
     return f"""❌ Отмена записи:
 
-👤 Клиент: {client_name}
+👤 Клиент: {escape_html(client_name)}
 📅 Дата: {formatted_date}
-🕐 Время: {appointment_time}
-📋 Услуга: {service}{warning}
+🕐 Время: {escape_html(appointment_time)}
+📋 Услуга: {escape_html(service)}{warning}
 
 Вы уверены, что хотите отменить запись?"""
 
@@ -247,31 +302,38 @@ def format_reschedule_success(appointment_id, client_name, old_date, old_time, n
     return f"""✅ Запись успешно перенесена!
 
 🆔 ID записи: {appointment_id}
-👤 Клиент: {client_name}
-📋 Услуга: {service}
+👤 Клиент: {escape_html(client_name)}
+📋 Услуга: {escape_html(service)}
 
-📅 Было: {old_formatted}, {old_time}
-📅 Стало: {new_formatted}, {new_time}
+📅 Было: {old_formatted}, {escape_html(old_time)}
+📅 Стало: {new_formatted}, {escape_html(new_time)}
 
 📱 Мы пришлем новое напоминание."""
 
 
 # ===== ОБЩИЕ ФУНКЦИИ ФОРМАТИРОВАНИЯ =====
 
-def format_appointment_info(appointment_id, client_name, appointment_date, appointment_time, service):
-    """Универсальная функция форматирования информации о записи"""
+def format_appointment_info(appointment_id, client_name, appointment_date, appointment_time, service, username=None, profile_link=None):
+    """Универсальная функция форматирования информации о записи (HTML)"""
     date_obj = datetime.strptime(appointment_date, '%Y-%m-%d').date()
     formatted_date = format_date_russian(date_obj)
 
-    return f"""📝 Найдена запись:
+    clickable_name = format_client_name_with_profile(client_name, username, profile_link)
+
+    info_text = f"""📝 Найдена запись:
 
 🆔 ID: {appointment_id}
-👤 Клиент: {client_name}
+👤 Клиент: {clickable_name}
 📅 Дата: {formatted_date}
-🕐 Время: {appointment_time}
-📋 Услуга: {service}
+🕐 Время: {escape_html(appointment_time)}
+📋 Услуга: {escape_html(service)}"""
 
-Выберите действие:"""
+    if username:
+        username_display = format_username_display(username, profile_link)
+        info_text += f"\n👤 Профиль: {username_display}"
+
+    info_text += "\n\nВыберите действие:"
+    return info_text
 
 
 def format_multiple_appointments(appointments):
@@ -281,60 +343,81 @@ def format_multiple_appointments(appointments):
     for appointment_id, client_name, appointment_date, appointment_time, service in appointments:
         date_obj = datetime.strptime(appointment_date, '%Y-%m-%d').date()
         formatted_date = format_date_russian(date_obj)
-        result_text += f"🆔 {appointment_id}: {client_name} - {formatted_date} {appointment_time} ({service})\n"
+        result_text += f"🆔 {appointment_id}: {escape_html(client_name)} - {formatted_date} {escape_html(appointment_time)} ({escape_html(service)})\n"
 
     result_text += "\n📝 Введите точный ID записи для редактирования:"
     return result_text
 
 
-def format_delete_confirmation(client_name, appointment_date, appointment_time, service):
-    """Форматирует сообщение подтверждения удаления"""
+def format_delete_confirmation(client_name, appointment_date, appointment_time, service, username=None, profile_link=None):
+    """Форматирует сообщение подтверждения удаления (HTML)"""
     date_obj = datetime.strptime(appointment_date, '%Y-%m-%d').date()
     formatted_date = format_date_russian(date_obj)
 
-    return f"""⚠️ Подтвердите удаление записи:
+    clickable_name = format_client_name_with_profile(client_name, username, profile_link)
 
-👤 Клиент: {client_name}
+    confirm_text = f"""⚠️ Подтвердите удаление записи:
+
+👤 Клиент: {clickable_name}
 📅 Дата: {formatted_date}
-🕐 Время: {appointment_time}
-📋 Услуга: {service}
+🕐 Время: {escape_html(appointment_time)}
+📋 Услуга: {escape_html(service)}"""
 
-❗️ Это действие нельзя отменить!"""
+    if username:
+        username_display = format_username_display(username, profile_link)
+        confirm_text += f"\n👤 Профиль: {username_display}"
+
+    confirm_text += "\n\n❗️ Это действие нельзя отменить!"
+    return confirm_text
 
 
-def format_time_change_success(client_name, appointment_date, old_time, new_time, service):
-    """Форматирует сообщение об успешном изменении времени"""
+def format_time_change_success(client_name, appointment_date, old_time, new_time, service, username=None, profile_link=None):
+    """Форматирует сообщение об успешном изменении времени (HTML)"""
     date_obj = datetime.strptime(appointment_date, '%Y-%m-%d').date()
     formatted_date = format_date_russian(date_obj)
 
-    return f"""✅ Время записи успешно изменено!
+    clickable_name = format_client_name_with_profile(client_name, username, profile_link)
 
-👤 Клиент: {client_name}
+    success_text = f"""✅ Время записи успешно изменено!
+
+👤 Клиент: {clickable_name}
 📅 Дата: {formatted_date}
-🕐 Старое время: {old_time}
-🕐 Новое время: {new_time}
-📋 Услуга: {service}
+🕐 Старое время: {escape_html(old_time)}
+🕐 Новое время: {escape_html(new_time)}
+📋 Услуга: {escape_html(service)}"""
 
-📱 Не забудьте уведомить клиента об изменении!"""
+    if username:
+        username_display = format_username_display(username, profile_link)
+        success_text += f"\n👤 Профиль: {username_display}"
+
+    success_text += "\n\n📱 Не забудьте уведомить клиента об изменении!"
+    return success_text
 
 
-def format_delete_success(client_name, appointment_date, appointment_time):
-    """Форматирует сообщение об успешном удалении"""
+def format_delete_success(client_name, appointment_date, appointment_time, username=None, profile_link=None):
+    """Форматирует сообщение об успешном удалении (HTML)"""
     date_obj = datetime.strptime(appointment_date, '%Y-%m-%d').date()
     formatted_date = format_date_russian(date_obj)
 
-    return f"""✅ Запись успешно удалена!
+    clickable_name = format_client_name_with_profile(client_name, username, profile_link)
 
-👤 Клиент: {client_name}
+    success_text = f"""✅ Запись успешно удалена!
+
+👤 Клиент: {clickable_name}
 📅 Дата: {formatted_date}
-🕐 Время: {appointment_time}
+🕐 Время: {escape_html(appointment_time)}"""
 
-📱 Не забудьте уведомить клиента об отмене!"""
+    if username:
+        username_display = format_username_display(username, profile_link)
+        success_text += f"\n👤 Профиль: {username_display}"
+
+    success_text += "\n\n📱 Не забудьте уведомить клиента об отмене!"
+    return success_text
 
 
 def format_time_conflict(new_time, formatted_date, conflict_client):
     """Форматирует сообщение о конфликте времени"""
-    return f"""⚠️ Время {new_time} на {formatted_date} уже занято клиентом: {conflict_client}
+    return f"""⚠️ Время {escape_html(new_time)} на {formatted_date} уже занято клиентом: {escape_html(conflict_client)}
 
 Выберите другое время."""
 

@@ -284,7 +284,7 @@ async def handle_admin_callback(callback: CallbackQuery, state: FSMContext, data
             if appointments is not None and target_date is not None:
                 schedule_text = format_admin_schedule_text(appointments, target_date)
                 keyboard = get_admin_schedule_keyboard(day_offset)
-                await callback.message.edit_text(schedule_text, reply_markup=keyboard)
+                await callback.message.edit_text(schedule_text, reply_markup=keyboard, parse_mode="HTML")
             else:
                 await callback.message.edit_text("❌ Ошибка загрузки расписания")
 
@@ -322,12 +322,19 @@ async def handle_admin_callback(callback: CallbackQuery, state: FSMContext, data
             appointment_info = await safe_database_operation(get_appointment_by_id, appointment_id)
 
             if appointment_info:
-                client_name, appointment_date, appointment_time, service, _ = appointment_info
-                confirmation_text = format_delete_confirmation(
-                    client_name, appointment_date, appointment_time, service
-                )
+                if len(appointment_info) >= 7:
+                    client_name, appointment_date, appointment_time, service, _, username, profile_link = appointment_info
+                    confirmation_text = format_delete_confirmation(
+                        client_name, appointment_date, appointment_time, service, username, profile_link
+                    )
+                else:
+                    client_name, appointment_date, appointment_time, service, _ = appointment_info[:5]
+                    confirmation_text = format_delete_confirmation(
+                        client_name, appointment_date, appointment_time, service
+                    )
+
                 keyboard = get_delete_confirmation_keyboard(appointment_id, "admin")
-                await callback.message.edit_text(confirmation_text, reply_markup=keyboard)
+                await callback.message.edit_text(confirmation_text, reply_markup=keyboard, parse_mode="HTML")
             else:
                 await callback.message.edit_text("❌ Запись не найдена")
 
@@ -337,12 +344,21 @@ async def handle_admin_callback(callback: CallbackQuery, state: FSMContext, data
             appointment_info = await safe_database_operation(get_appointment_by_id, appointment_id)
 
             if appointment_info:
-                client_name, appointment_date, appointment_time, _, _ = appointment_info
-                if await safe_database_operation(delete_appointment, appointment_id):
-                    success_text = format_delete_success(client_name, appointment_date, appointment_time)
-                    await callback.message.edit_text(success_text)
+                if len(appointment_info) >= 7:
+                    client_name, appointment_date, appointment_time, _, _, username, profile_link = appointment_info
+                    if await safe_database_operation(delete_appointment, appointment_id):
+                        success_text = format_delete_success(client_name, appointment_date, appointment_time, username,
+                                                             profile_link)
+                        await callback.message.edit_text(success_text, parse_mode="HTML")
+                    else:
+                        await callback.message.edit_text("❌ Ошибка удаления записи")
                 else:
-                    await callback.message.edit_text("❌ Ошибка удаления записи")
+                    client_name, appointment_date, appointment_time, _, _ = appointment_info[:5]
+                    if await safe_database_operation(delete_appointment, appointment_id):
+                        success_text = format_delete_success(client_name, appointment_date, appointment_time)
+                        await callback.message.edit_text(success_text)
+                    else:
+                        await callback.message.edit_text("❌ Ошибка удаления записи")
             else:
                 await callback.message.edit_text("❌ Запись не найдена")
             await state.clear()
@@ -352,7 +368,7 @@ async def handle_admin_callback(callback: CallbackQuery, state: FSMContext, data
             await callback.message.edit_text(COMMON_MESSAGES['delete_cancelled'])
             await state.clear()
 
-        # Главное меню администратора - FIXED
+        # Главное меню администратора
         elif data == "admin_main_menu":
             await state.clear()
             # Delete the inline message
@@ -427,7 +443,9 @@ async def handle_client_callback(callback: CallbackQuery, state: FSMContext, dat
                 booking_data['client_name'],
                 booking_data['appointment_date'],
                 booking_data['appointment_time'],
-                booking_data['service']
+                booking_data['service'],
+                None,  # phone
+                callback.from_user  # передаем объект пользователя для сохранения профиля
             )
 
             if appointment_id:
@@ -444,7 +462,7 @@ async def handle_client_callback(callback: CallbackQuery, state: FSMContext, dat
 
             await state.clear()
 
-        # Главное меню клиента - FIXED
+        # Главное меню клиента
         elif data == "client_main_menu":
             await state.clear()
             # Delete the inline message
@@ -491,7 +509,6 @@ async def handle_client_callback(callback: CallbackQuery, state: FSMContext, dat
         logger.error(f"Ошибка в handle_client_callback: {e}")
         await callback.message.edit_text("❌ Произошла ошибка")
 
-
 # ===== ФУНКЦИИ АДМИНИСТРАТОРА =====
 
 async def show_admin_schedule(message: Message, day_offset: int):
@@ -501,7 +518,7 @@ async def show_admin_schedule(message: Message, day_offset: int):
         if appointments is not None and target_date is not None:
             schedule_text = format_admin_schedule_text(appointments, target_date)
             keyboard = get_admin_schedule_keyboard(day_offset)
-            await message.answer(schedule_text, reply_markup=keyboard)
+            await message.answer(schedule_text, reply_markup=keyboard, parse_mode="HTML")
         else:
             await message.answer("❌ Ошибка загрузки расписания")
     except Exception as e:
@@ -565,7 +582,6 @@ async def start_admin_add_appointment(message: Message, state: FSMContext):
         await message.answer("❌ Ошибка начала добавления записи")
 
 
-# Функции обработки состояний администратора
 async def handle_admin_search(message: Message, state: FSMContext):
     """Обрабатывает поиск записи администратором"""
     try:
@@ -578,14 +594,24 @@ async def handle_admin_search(message: Message, state: FSMContext):
 
         if len(appointments) == 1:
             appointment_id, client_name, appointment_date, appointment_time, service = appointments[0]
-            info_text = format_appointment_info(
-                appointment_id, client_name, appointment_date, appointment_time, service
-            )
+
+            # Получаем полную информацию о записи включая профиль
+            full_appointment = await safe_database_operation(get_appointment_by_id, appointment_id)
+            if full_appointment and len(full_appointment) >= 7:
+                _, _, _, _, _, username, profile_link = full_appointment
+                info_text = format_appointment_info(
+                    appointment_id, client_name, appointment_date, appointment_time, service, username, profile_link
+                )
+            else:
+                info_text = format_appointment_info(
+                    appointment_id, client_name, appointment_date, appointment_time, service
+                )
+
             keyboard = get_admin_appointment_actions_keyboard(appointment_id)
-            await message.answer(info_text, reply_markup=keyboard)
+            await message.answer(info_text, reply_markup=keyboard, parse_mode="HTML")
         else:
             result_text = format_multiple_appointments(appointments)
-            await message.answer(result_text)
+            await message.answer(result_text, parse_mode="HTML")
 
         await state.clear()
     except Exception as e:
@@ -608,7 +634,11 @@ async def handle_admin_time_change(message: Message, state: FSMContext):
         appointment_info = await safe_database_operation(get_appointment_by_id, appointment_id)
 
         if appointment_info:
-            client_name, appointment_date, old_time, service, _ = appointment_info
+            if len(appointment_info) >= 7:
+                client_name, appointment_date, old_time, service, _, username, profile_link = appointment_info
+            else:
+                client_name, appointment_date, old_time, service, _ = appointment_info[:5]
+                username, profile_link = None, None
 
             # Проверяем конфликт времени
             conflict = await safe_database_operation(check_time_conflict, new_time, appointment_date, appointment_id)
@@ -617,13 +647,13 @@ async def handle_admin_time_change(message: Message, state: FSMContext):
                 date_obj = datetime.strptime(appointment_date, '%Y-%m-%d').date()
                 formatted_date = format_date_russian(date_obj)
                 conflict_text = format_time_conflict(new_time, formatted_date, conflict[0])
-                await message.answer(conflict_text)
+                await message.answer(conflict_text, parse_mode="HTML")
             else:
                 if await safe_database_operation(update_appointment_time, appointment_id, new_time):
                     success_text = format_time_change_success(
-                        client_name, appointment_date, old_time, new_time, service
+                        client_name, appointment_date, old_time, new_time, service, username, profile_link
                     )
-                    await message.answer(success_text)
+                    await message.answer(success_text, parse_mode="HTML")
                 else:
                     await message.answer("❌ Ошибка обновления времени")
         else:
@@ -702,7 +732,7 @@ async def handle_admin_date_input(message: Message, state: FSMContext):
         schedule_text = format_admin_schedule_text(appointments, target_date)
         keyboard = get_selected_date_keyboard("admin")
 
-        await message.answer(schedule_text, reply_markup=keyboard)
+        await message.answer(schedule_text, reply_markup=keyboard, parse_mode="HTML")
         await state.clear()
     except Exception as e:
         logger.error(f"Ошибка в handle_admin_date_input: {e}")
@@ -804,7 +834,10 @@ async def handle_admin_add_service(message: Message, state: FSMContext):
             data['client_name'],
             data['appointment_date'],
             data['appointment_time'],
-            service
+            service,
+            None,  # telegram_user_id (админ добавляет без привязки к telegram)
+            None,  # phone
+            None   # telegram_user
         )
 
         if appointment_id:
@@ -1278,16 +1311,23 @@ async def show_appointment_details(message: Message, appointment_id: str, edit: 
                 await message.answer(text)
             return
 
-        client_name, appointment_date, appointment_time, service, _ = appointment_info
-        details_text = format_appointment_details(
-            int(appointment_id), client_name, appointment_date, appointment_time, service
-        )
+        if len(appointment_info) >= 7:
+            client_name, appointment_date, appointment_time, service, _, username, profile_link = appointment_info
+            details_text = format_appointment_details(
+                int(appointment_id), client_name, appointment_date, appointment_time, service, username, profile_link
+            )
+        else:
+            client_name, appointment_date, appointment_time, service, _ = appointment_info[:5]
+            details_text = format_appointment_details(
+                int(appointment_id), client_name, appointment_date, appointment_time, service
+            )
+
         keyboard = get_client_appointment_actions_keyboard(appointment_id)
 
         if edit:
-            await message.edit_text(details_text, reply_markup=keyboard)
+            await message.edit_text(details_text, reply_markup=keyboard, parse_mode="HTML")
         else:
-            await message.answer(details_text, reply_markup=keyboard)
+            await message.answer(details_text, reply_markup=keyboard, parse_mode="HTML")
     except Exception as e:
         logger.error(f"Ошибка в show_appointment_details: {e}")
         text = "❌ Ошибка получения деталей записи"
