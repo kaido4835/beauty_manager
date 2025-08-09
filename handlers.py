@@ -352,8 +352,12 @@ async def handle_admin_callback(callback: CallbackQuery, state: FSMContext, data
             await callback.message.edit_text(COMMON_MESSAGES['delete_cancelled'])
             await state.clear()
 
+        # Главное меню администратора - FIXED
         elif data == "admin_main_menu":
             await state.clear()
+            # Delete the inline message
+            await callback.message.delete()
+            # Get stats for the welcome message
             stats = await safe_database_operation(get_stats_summary)
             if stats:
                 welcome_text = ADMIN_MESSAGES['main_menu_welcome'].format(
@@ -364,8 +368,9 @@ async def handle_admin_callback(callback: CallbackQuery, state: FSMContext, data
             else:
                 welcome_text = "🔧 Панель администратора\n\n⚠️ Возможны проблемы с базой данных."
 
+            # Send a new message with the ReplyKeyboardMarkup
             keyboard = get_admin_menu_keyboard()
-            await callback.message.edit_text(welcome_text, reply_markup=keyboard)
+            await callback.message.answer(welcome_text, reply_markup=keyboard)
 
     except Exception as e:
         logger.error(f"Ошибка в handle_admin_callback: {e}")
@@ -434,19 +439,19 @@ async def handle_client_callback(callback: CallbackQuery, state: FSMContext, dat
                     booking_data['service']
                 )
                 await callback.message.edit_text(success_text)
-
-            # Главное меню клиента
-            elif data == "client_main_menu":
-                await state.clear()
-                await callback.message.edit_text(CLIENT_MESSAGES['welcome'])
-                # Отправляем новое сообщение с ReplyKeyboardMarkup
-                keyboard = get_client_menu_keyboard()
-                await callback.message.answer(CLIENT_MESSAGES['welcome'], reply_markup=keyboard)
-
             else:
                 await callback.message.edit_text("❌ Ошибка создания записи. Попробуйте еще раз.")
 
             await state.clear()
+
+        # Главное меню клиента - FIXED
+        elif data == "client_main_menu":
+            await state.clear()
+            # Delete the inline message
+            await callback.message.delete()
+            # Send a new message with the ReplyKeyboardMarkup
+            keyboard = get_client_menu_keyboard()
+            await callback.message.answer(CLIENT_MESSAGES['welcome'], reply_markup=keyboard)
 
         # Отмена записи
         elif data == "client_cancel_booking":
@@ -481,12 +486,6 @@ async def handle_client_callback(callback: CallbackQuery, state: FSMContext, dat
         elif data == "client_keep_appointment":
             await callback.message.edit_text("✅ Запись сохранена")
             await state.clear()
-
-        # Главное меню клиента
-        elif data == "client_main_menu":
-            await state.clear()
-            keyboard = get_client_menu_keyboard()
-            await callback.message.edit_text(CLIENT_MESSAGES['welcome'], reply_markup=keyboard)
 
     except Exception as e:
         logger.error(f"Ошибка в handle_client_callback: {e}")
